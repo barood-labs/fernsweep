@@ -1,24 +1,20 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Fernsweep — Wallet Cleaner for Ethereum & Robinhood Chain</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://eth.blockscout.com https://robinhoodchain.blockscout.com https://ethereum-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://rpc.mevblocker.io; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://eth.blockscout.com https://robinhoodchain.blockscout.com https://ethereum-rpc.publicnode.com https://rpc.mainnet.chain.robinhood.com https://rpc.mevblocker.io https://aggregator-api.kyberswap.com; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
 <link rel="stylesheet" href="style.css"></head><body>
 <header><h1>🌿 Fernsweep</h1><p>Free, read-only wallet cleaner for Ethereum &amp; Robinhood Chain. No accounts, no backend. We never ask for a private key or seed phrase — ever.</p></header>
 <main>
-<section class="card"><h2>1. Scan</h2>
-<label>Wallet addresses (one per line, or comma-separated)</label>
-<textarea id="addrs" rows="4" placeholder="0x..."></textarea>
-<div class="row"><label><input type="checkbox" id="cEth" checked> Ethereum</label><label><input type="checkbox" id="cRh" checked> Robinhood Chain</label>
-<button id="scan">Scan (read-only)</button></div>
-<div class="row"><button id="connect" class="ghost">Connect my wallet (for actions only)</button><span id="who"></span></div>
-<p class="muted">Scanning only reads public data. Actions are signed in <b>your own</b> wallet app (MetaMask, Rabby…); you approve every transaction there.</p>
+<section class="card"><h2>Your wallet</h2>
+<div class="row"><button id="connect">Connect wallet</button><span id="who" class="muted">Not connected</span><button id="rescan" class="ghost" hidden>Rescan</button></div>
+<p class="muted">Fernsweep scans only the wallet you connect, on Ethereum and Robinhood Chain. Switching account in your wallet rescans automatically. Every action is signed in <b>your own</b> wallet app (MetaMask, Rabby…). We never ask for a private key or seed phrase.</p>
 <div id="status"></div></section>
 <div id="results"></div>
 <section class="card"><h2>Stuck?</h2>
 <h3>Pending / stuck transaction</h3>
-<div class="row"><input id="stAddr" placeholder="0x wallet"><select id="stChain"><option value="eth">Ethereum</option><option value="rh">Robinhood Chain</option></select><button id="stCheck">Check nonces</button></div>
+<div class="row"><select id="stChain"><option value="eth">Ethereum</option><option value="rh">Robinhood Chain</option></select><button id="stCheck">Check my pending txs</button></div>
 <div id="stOut"></div>
 <h3>Token that won't move / can't sell</h3>
-<div class="row"><input id="tkAddr" placeholder="0x token contract"><input id="tkHolder" placeholder="0x your wallet (holder)"><select id="tkChain"><option value="eth">Ethereum</option><option value="rh">Robinhood Chain</option></select><button id="tkCheck">Diagnose</button></div>
+<div class="row"><input id="tkAddr" placeholder="0x token contract"><select id="tkChain"><option value="eth">Ethereum</option><option value="rh">Robinhood Chain</option></select><button id="tkCheck">Diagnose</button></div>
 <div id="tkOut"></div>
 <p class="muted">Honest note: nobody can force a contract to release tokens. If the token's code blocks transfers, no tool can fix it — we can only explain why.</p></section>
 <section class="card"><h3>Support (optional)</h3><p class="muted">Tip address: <code id="tip">TIP_ADDRESS_PLACEHOLDER</code></p></section>
