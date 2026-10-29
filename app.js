@@ -17,7 +17,8 @@ const fmt=(v,d=18,p=6)=>{v=BigInt(v);const s=(v<0n?-v:v).toString().padStart(d+1
 const usd=n=>n==null||isNaN(n)?'—':'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
 const status=m=>$('status').innerHTML=m;
 const hidden=new Set(JSON.parse(localStorage.getItem('fs_hidden')||'[]'));
-async function rpc(c,method,params,url){const r=await fetch(url||CHAINS[c].rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});const j=await r.json();if(j.error)throw new Error(j.error.message);return j.result}
+async function rpc(c,method,params,url){let e;for(let i=0;i<3;i++){try{return await rpc1(c,method,params,url)}catch(x){e=x;if(/revert|execution/i.test(x.message))throw x;await new Promise(s=>setTimeout(s,800*(i+1)))}}throw e}
+async function rpc1(c,method,params,url){const r=await fetch(url||CHAINS[c].rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});const j=await r.json();if(j.error)throw new Error(j.error.message);return j.result}
 async function bs(c,path){let e;for(let i=0;i<3;i++){try{const r=await fetch(CHAINS[c].bs+path);if(r.ok){const j=await r.json();if(!('result' in j)||j.result!==null)return j}e=new Error(CHAINS[c].name+' explorer HTTP '+r.status)}catch(x){e=x}await new Promise(s=>setTimeout(s,1500*(i+1)))}throw e}
 const priceCache={};
 async function nativePrice(c){if(c in priceCache)return priceCache[c];try{const s=await bs(c,'/api/v2/stats');priceCache[c]=s.coin_price?+s.coin_price:null}catch{priceCache[c]=null}return priceCache[c]}
@@ -54,7 +55,7 @@ async function approvals(c,owner){
  for(let i=0;i<list.length;i+=8)await Promise.all(list.slice(i,i+8).map(async a=>{
   try{ if(a.kind==='ERC-20'){const r=await rpc(c,'eth_call',[{to:a.token,data:'0xdd62ed3e'+pad(owner)+pad(a.spender)},'latest']);a.amount=BigInt(r&&r!=='0x'?r.slice(0,66):'0x0');if(a.amount===0n)return;a.unlimited=a.amount>=MAXU}
        else {const r=await rpc(c,'eth_call',[{to:a.token,data:'0xe985e9c5'+pad(owner)+pad(a.spender)},'latest']);if(BigInt(r&&r!=='0x'?r.slice(0,66):'0x0')===0n)return;a.unlimited=true}
-  }catch{return}
+  }catch(err){if(/revert|execution/i.test(err.message))return;a.unverified=true;a.unlimited=false;a.amount=0n}
   out.push(a)}));
  out.sort((a,b)=>(b.unlimited?1:0)-(a.unlimited?1:0));return out}
 
@@ -100,7 +101,7 @@ function render(res,d){
   html+=`<section class="card"><h3>${ch.name} · <a href="${ch.bs}/address/${r.a}" target="_blank" rel="noopener">${esc(r.a)}</a></h3>
   <p>Native: <b>${fmt(r.bal)} ETH</b> (${usd(r.nativeUsd)}) · ${r.tokens.length} tokens (${r.tokens.filter(t=>t.spam).length} flagged spam) · ${r.approvals.length} active approvals</p>
   <h4>Approvals ${r.apprErr?'<span class="tag md">'+esc(r.apprErr)+'</span>':''}</h4>
-  ${r.approvals.length?`<div class="row"><button class="danger" data-act="revokeAll" data-k="${r.c}|${r.a}">Revoke all ${r.approvals.length} (one tx each)</button></div><div class="scroll"><table><tr><th>Type</th><th>Token</th><th>Spender</th><th>Allowance</th><th></th></tr>${r.approvals.map((a,i)=>`<tr><td>${a.kind}</td><td><a href="${ch.bs}/token/${a.token}" target="_blank" rel="noopener">${esc(a.token)}</a></td><td>${esc(a.spender)}</td><td>${a.unlimited?'<span class="tag hi">UNLIMITED — high risk</span>':esc(a.amount.toString())}</td><td><button class="warn" data-act="revoke" data-k="${r.c}|${r.a}" data-i="${i}">Revoke</button></td></tr>`).join('')}</table></div>`:'<p class="tag ok">No active approvals found.</p>'}
+  ${r.approvals.length?`<div class="row"><button class="danger" data-act="revokeAll" data-k="${r.c}|${r.a}">Revoke all ${r.approvals.length} (one tx each)</button></div><div class="scroll"><table><tr><th>Type</th><th>Token</th><th>Spender</th><th>Allowance</th><th></th></tr>${r.approvals.map((a,i)=>`<tr><td>${a.kind}</td><td><a href="${ch.bs}/token/${a.token}" target="_blank" rel="noopener">${esc(a.token)}</a></td><td>${esc(a.spender)}</td><td>${a.unverified?'<span class="tag md">could not verify (RPC busy) — rescan</span>':a.unlimited?'<span class="tag hi">UNLIMITED — high risk</span>':esc(a.amount.toString())}</td><td><button class="warn" data-act="revoke" data-k="${r.c}|${r.a}" data-i="${i}">Revoke</button></td></tr>`).join('')}</table></div>`:'<p class="tag ok">No active approvals found.</p>'}
   <h4>Tokens ${r.tokErr?'<span class="tag md">'+esc(r.tokErr)+'</span>':''}</h4>
   <div class="scroll"><table><tr><th>Token</th><th>Amount</th><th>USD</th><th>Flags</th><th></th></tr>${toks.map(t=>`<tr><td>${esc(t.symbol)} <span class="muted">${esc(t.name)}</span><br><code>${t.addr}</code></td><td>${fmt(t.amt,t.decimals)}</td><td>${t.spam?'—':usd(t.usd)}</td><td>${t.flags.map(f=>`<span class="tag ${t.spam?'hi':'md'}">${esc(f)}</span>`).join('')||'<span class="tag ok">ok</span>'}</td><td>${t.spam?`<button class="ghost" data-act="hide" data-h="${r.c}|${t.addr.toLowerCase()}">Hide</button> <button class="danger" data-act="burn" data-k="${r.c}|${r.a}" data-t="${t.addr}">Burn</button>`:''}</td></tr>`).join('')}</table></div>
   ${hidden.size?'<p class="muted">Hidden spam tokens are saved only in this browser.</p>':''}</section>`}
