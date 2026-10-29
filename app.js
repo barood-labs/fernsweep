@@ -1,8 +1,8 @@
 'use strict';
 // Fernsweep — read-only scanner + user-signed actions via injected EIP-1193 wallet. No keys, no backend.
 const CHAINS={
- eth:{name:'Ethereum',id:1,hex:'0x1',rpc:'https://ethereum-rpc.publicnode.com',bs:'https://eth.blockscout.com'},
- rh:{name:'Robinhood Chain',id:4663,hex:'0x1237',rpc:'https://rpc.mainnet.chain.robinhood.com',bs:'https://robinhoodchain.blockscout.com',
+ eth:{name:'Ethereum',id:1,hex:'0x1',rpc:'https://ethereum-rpc.publicnode.com',bs:'https://eth.blockscout.com',logsRpc:'https://rpc.mevblocker.io',recent:50000},
+ rh:{name:'Robinhood Chain',id:4663,hex:'0x1237',rpc:'https://rpc.mainnet.chain.robinhood.com',bs:'https://robinhoodchain.blockscout.com',logsRpc:'https://rpc.mainnet.chain.robinhood.com',recent:29000,
    add:{chainId:'0x1237',chainName:'Robinhood Chain',nativeCurrency:{name:'Ether',symbol:'ETH',decimals:18},rpcUrls:['https://rpc.mainnet.chain.robinhood.com'],blockExplorerUrls:['https://robinhoodchain.blockscout.com']}}};
 const T_APPROVAL='0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
 const T_APPROVAL_ALL='0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31';
@@ -17,8 +17,8 @@ const fmt=(v,d=18,p=6)=>{v=BigInt(v);const s=(v<0n?-v:v).toString().padStart(d+1
 const usd=n=>n==null||isNaN(n)?'—':'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
 const status=m=>$('status').innerHTML=m;
 const hidden=new Set(JSON.parse(localStorage.getItem('fs_hidden')||'[]'));
-async function rpc(c,method,params){const r=await fetch(CHAINS[c].rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});const j=await r.json();if(j.error)throw new Error(j.error.message);return j.result}
-async function bs(c,path){const r=await fetch(CHAINS[c].bs+path);if(!r.ok)throw new Error(CHAINS[c].name+' explorer HTTP '+r.status);return r.json()}
+async function rpc(c,method,params,url){const r=await fetch(url||CHAINS[c].rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});const j=await r.json();if(j.error)throw new Error(j.error.message);return j.result}
+async function bs(c,path){let e;for(let i=0;i<3;i++){try{const r=await fetch(CHAINS[c].bs+path);if(r.ok){const j=await r.json();if(!('result' in j)||j.result!==null)return j}e=new Error(CHAINS[c].name+' explorer HTTP '+r.status)}catch(x){e=x}await new Promise(s=>setTimeout(s,1500*(i+1)))}throw e}
 const priceCache={};
 async function nativePrice(c){if(c in priceCache)return priceCache[c];try{const s=await bs(c,'/api/v2/stats');priceCache[c]=s.coin_price?+s.coin_price:null}catch{priceCache[c]=null}return priceCache[c]}
 
@@ -32,19 +32,31 @@ function spamFlags(t){const f=[];const n=(t.name||'')+' '+(t.symbol||'');
 const isSpam=f=>f.some(x=>/explorer|bait/.test(x))||f.length>=3;
 
 // ---------- approvals ----------
+// Blockscout getLogs returns max 1000 rows per call; paginate by block cursor and de-duplicate.
+async function allLogs(c,topic0,owner){const seen=new Set(),out=[];let from=0;
+ for(let guard=0;guard<200;guard++){
+  const j=await bs(c,`/api?module=logs&action=getLogs&fromBlock=${from}&toBlock=latest&topic0=${topic0}&topic1=0x${pad(owner)}&topic0_1_opr=and`);
+  const rows=Array.isArray(j.result)?j.result:[];
+  for(const l of rows){const k=l.transactionHash+':'+parseInt(l.logIndex,16);if(!seen.has(k)){seen.add(k);out.push(l)}}
+  if(rows.length<1000)break;
+  const last=parseInt(rows[rows.length-1].blockNumber,16);if(last<=from)throw new Error('Too many logs in one block');from=last}
+ try{const head=parseInt(await rpc(c,'eth_blockNumber',[]),16);const rl=await rpc(c,'eth_getLogs',[{fromBlock:'0x'+Math.max(0,head-CHAINS[c].recent).toString(16),toBlock:'latest',topics:[topic0,'0x'+pad(owner)]}],CHAINS[c].logsRpc);
+  for(const l of rl||[]){const k=l.transactionHash+':'+parseInt(l.logIndex,16);if(!seen.has(k)){seen.add(k);out.push(l)}}}catch{}
+ out.sort((a,b)=>parseInt(a.blockNumber,16)-parseInt(b.blockNumber,16)||parseInt(a.logIndex,16)-parseInt(b.logIndex,16));return out}
+const tp=l=>(l.topics||[]).filter(x=>x);
 async function approvals(c,owner){
- const q=t=>bs(c,`/api?module=logs&action=getLogs&fromBlock=0&toBlock=latest&topic0=${t}&topic1=0x${pad(owner)}&topic0_1_opr=and`).then(j=>Array.isArray(j.result)?j.result:[]);
- const [erc,all]=await Promise.all([q(T_APPROVAL),q(T_APPROVAL_ALL)]);
+ const [erc,all]=await Promise.all([allLogs(c,T_APPROVAL,owner),allLogs(c,T_APPROVAL_ALL,owner)]);
  const latest={};
- for(const l of erc){if(l.topics.length!==3)continue;latest['20|'+l.address+'|'+topicAddr(l.topics[2])]={kind:'ERC-20',token:l.address,spender:topicAddr(l.topics[2])}}
- for(const l of all){latest['721|'+l.address+'|'+topicAddr(l.topics[2])]={kind:'NFT (all)',token:l.address,spender:topicAddr(l.topics[2]),on:BigInt(l.data||'0x0')!==0n}}
- const out=[];
- for(const a of Object.values(latest)){
-  try{ if(a.kind==='ERC-20'){const r=await rpc(c,'eth_call',[{to:a.token,data:'0xdd62ed3e'+pad(owner)+pad(a.spender)},'latest']);a.amount=BigInt(r&&r!=='0x'?r:'0x0');if(a.amount===0n)continue;a.unlimited=a.amount>=MAXU}
-       else {const r=await rpc(c,'eth_call',[{to:a.token,data:'0xe985e9c5'+pad(owner)+pad(a.spender)},'latest']);if(BigInt(r&&r!=='0x'?r:'0x0')===0n)continue;a.unlimited=true}
-  }catch{continue}
-  out.push(a)}
- return out}
+ // ERC-20 Approval has 3 topics; ERC-721 per-token Approval has 4 (tokenId) — skipped (cleared on transfer).
+ for(const l of erc){const t=tp(l);if(t.length!==3)continue;latest['20|'+l.address.toLowerCase()+'|'+topicAddr(t[2])]={kind:'ERC-20',token:l.address,spender:topicAddr(t[2])}}
+ for(const l of all){const t=tp(l);if(t.length<3)continue;latest['721|'+l.address.toLowerCase()+'|'+topicAddr(t[2])]={kind:'NFT (all)',token:l.address,spender:topicAddr(t[2])}}
+ const out=[];const list=Object.values(latest);
+ for(let i=0;i<list.length;i+=8)await Promise.all(list.slice(i,i+8).map(async a=>{
+  try{ if(a.kind==='ERC-20'){const r=await rpc(c,'eth_call',[{to:a.token,data:'0xdd62ed3e'+pad(owner)+pad(a.spender)},'latest']);a.amount=BigInt(r&&r!=='0x'?r.slice(0,66):'0x0');if(a.amount===0n)return;a.unlimited=a.amount>=MAXU}
+       else {const r=await rpc(c,'eth_call',[{to:a.token,data:'0xe985e9c5'+pad(owner)+pad(a.spender)},'latest']);if(BigInt(r&&r!=='0x'?r.slice(0,66):'0x0')===0n)return;a.unlimited=true}
+  }catch{return}
+  out.push(a)}));
+ out.sort((a,b)=>(b.unlimited?1:0)-(a.unlimited?1:0));return out}
 
 // ---------- scan ----------
 let LAST={};
@@ -120,17 +132,38 @@ document.addEventListener('click',async e=>{const b=e.target.closest('button[dat
  }catch(err){status('<span class="tag hi">'+esc(err.message||err)+'</span>')}});
 
 // ---------- gas sweeper ----------
-function sweepUI(){const ws=Object.values(LAST).filter(r=>!r.err&&r.bal>0n);
- $('tools').innerHTML=`<h3>Gas sweeper</h3><p class="muted">Moves leftover ETH from each wallet to one target. One wallet at a time: switch your wallet app to that account, then click its button. Each send is signed by you.</p>
- <input id="swTo" placeholder="0x target address (double-check it!)">
- <table>${ws.map((r,i)=>`<tr><td>${CHAINS[r.c].name}</td><td>${r.a}</td><td>${fmt(r.bal)} ETH</td><td><button class="warn" data-sw="${i}">Sweep</button></td></tr>`).join('')||'<tr><td>No balances to sweep.</td></tr>'}</table>`;
- $('tools').querySelectorAll('[data-sw]').forEach(b=>b.onclick=async()=>{const r=ws[+b.dataset.sw];const to=$('swTo').value.trim();
-  try{if(!isAddr(to))throw new Error('Enter a valid target address.');if(to.toLowerCase()===r.a.toLowerCase())throw new Error('Target is the same wallet.');
-   await ensure(r.c,r.a);const bal=BigInt(await rpc(r.c,'eth_getBalance',[r.a,'latest']));const gp=BigInt(await rpc(r.c,'eth_gasPrice',[]))*13n/10n;const gas=r.c==='rh'?200000n:21000n;
-   const gasLimit=r.c==='rh'?BigInt(await rpc(r.c,'eth_estimateGas',[{from:r.a,to,value:'0x1'}]))*12n/10n:gas;
-   const fee=gasLimit*gp;if(bal<=fee)throw new Error('Balance is below the gas cost — nothing worth sweeping.');const val=bal-fee;
-   if(!confirm(`Sweep ${fmt(val)} ETH from ${r.a}\nto ${to}\non ${CHAINS[r.c].name}\nMax gas ≈ ${fmt(fee)} ETH. Continue?`))return;
-   const h=await ethereum.request({method:'eth_sendTransaction',params:[{from:r.a,to,value:'0x'+val.toString(16),gas:'0x'+gasLimit.toString(16),gasPrice:'0x'+gp.toString(16)}]});status('Sweep sent: '+esc(h))}catch(e){status('<span class="tag hi">'+esc(e.message)+'</span>')}})}
+// Fee model: legacy gasPrice so the wallet pays exactly gasLimit*gasPrice and we can leave exact gas.
+// Robinhood Chain is an Arbitrum Orbit L2: L1 data cost is charged as extra gas units. We query
+// NodeInterface (0x..C8).gasEstimateL1Component and add those units to the L2 estimate.
+const NODE_IF='0x00000000000000000000000000000000000000C8';
+async function l1Units(c,from,to,data='0x'){if(c!=='rh')return 0n;try{
+ const len=(data.length-2)/2;const body=data.slice(2).padEnd(Math.ceil(len/32)*64,'0');
+ const r=await rpc(c,'eth_call',[{from,to:NODE_IF,data:'0x77d488a2'+pad(to)+pad('0')+pad('60')+pad(len.toString(16))+body},'latest']);
+ return BigInt('0x'+r.slice(2,66))}catch{return 0n}}
+async function nativeSweepQuote(c,from,to){
+ const [bal,gp]=await Promise.all([rpc(c,'eth_getBalance',[from,'latest']),rpc(c,'eth_gasPrice',[])]);
+ const price=BigInt(gp)*12n/10n; // +20% buffer so it confirms
+ let l2=21000n;try{l2=BigInt(await rpc(c,'eth_estimateGas',[{from,to,value:'0x1'}]))}catch{}
+ const l1=await l1Units(c,from,to);const gas=(l2+l1)*11n/10n;const fee=gas*price;const B=BigInt(bal);
+ return {bal:B,gas,price,fee,l1,value:B>fee?B-fee:0n}}
+async function sweepUI(){const ws=Object.values(LAST).filter(r=>!r.err);
+ $('tools').innerHTML=`<h3>Gas sweeper</h3><p class="muted">Leftover ETH from each wallet → one target. Live gas shown first. Sweep amount = balance − exact max gas, so nothing is stranded. Switch your wallet app to each account and click its button; you sign every send.</p>
+ <div class="row"><input id="swTo" placeholder="0x target address (double-check it!)"><button id="swQuote">Get live quotes</button></div><div id="swList" class="scroll"></div>`;
+ $('swQuote').onclick=async()=>{const to=$('swTo').value.trim();if(!isAddr(to))return status('Enter a valid target address first.');
+  $('swList').innerHTML='Quoting gas…';const rows=[];
+  for(const r of ws){if(r.a.toLowerCase()===to.toLowerCase())continue;try{const q=await nativeSweepQuote(r.c,r.a,to);const p=await nativePrice(r.c);
+   const U=v=>p?Number(fmt(v,18,12))*p:null;const netU=U(q.value);const worth=q.value>0n&&q.value>q.fee*3n&&(netU==null||netU>=1);
+   const swapGas=(r.c==='rh'?250000n:180000n)*q.price; // approve+swap typical
+   const dust=r.tokens.filter(t=>!t.spam&&t.usd!=null&&t.usd<50).map(t=>({t,ok:t.usd>U(swapGas)*2}));
+   rows.push({r,q,netU,feeU:U(q.fee),worth,dust,swapU:U(swapGas)})}catch(e){rows.push({r,err:e.message})}}
+  rows.sort((x,y)=>(y.netU??-1)-(x.netU??-1));
+  $('swList').innerHTML=`<table><tr><th>Chain</th><th>Wallet</th><th>Balance</th><th>Gas (ETH / USD)</th><th>Net after gas</th><th></th></tr>${rows.map((x,i)=>x.err?`<tr><td>${CHAINS[x.r.c].name}</td><td>${x.r.a}</td><td colspan=4 class="tag hi">${esc(x.err)}</td></tr>`:
+   `<tr><td>${CHAINS[x.r.c].name}</td><td><code>${x.r.a}</code></td><td>${fmt(x.q.bal)} ETH</td><td>${fmt(x.q.fee,18,8)} / ${usd(x.feeU)}${x.r.c==='rh'?`<br><span class="muted">incl. L1 data: ${x.q.l1} gas units</span>`:''}</td><td>${fmt(x.q.value)} ETH (${usd(x.netU)})<br><span class="tag ${x.worth?'ok':'hi'}">${x.worth?'Worth it':'Not worth it'}</span></td><td><button class="warn" data-sw="${i}" ${x.q.value>0n?'':'disabled'}>Sweep</button></td></tr>
+   ${x.dust.length?`<tr><td></td><td colspan=5 class="muted">Dust tokens (swap ≈ ${usd(x.swapU)} gas): ${x.dust.map(d=>`${esc(d.t.symbol)} ${usd(d.t.usd)} <span class="tag ${d.ok?'ok':'hi'}">${d.ok?'worth swapping':'not worth swapping'}</span>`).join(' · ')}</td></tr>`:''}`).join('')}</table>`;
+  $('swList').querySelectorAll('[data-sw]').forEach(b=>b.onclick=async()=>{const {r}=rows[+b.dataset.sw];
+   try{await ensure(r.c,r.a);const q=await nativeSweepQuote(r.c,r.a,to);if(q.value<=0n)throw new Error('Balance is below the gas cost.');
+    if(!confirm(`Sweep ${fmt(q.value)} ETH\nfrom ${r.a}\nto ${to}\non ${CHAINS[r.c].name}\nGas reserved: ${fmt(q.fee,18,8)} ETH. Continue?`))return;
+    const h=await ethereum.request({method:'eth_sendTransaction',params:[{from:r.a,to,value:'0x'+q.value.toString(16),gas:'0x'+q.gas.toString(16),gasPrice:'0x'+q.price.toString(16)}]});status('Sweep sent: '+esc(h))}catch(e){status('<span class="tag hi">'+esc(e.message)+'</span>')}})}}
 
 // ---------- CSV export ----------
 async function exportCsv(){const rows=[['chain','wallet','hash','time_utc','type','from','to','token','amount','fee_eth','status']];
